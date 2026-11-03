@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Vagal Breath</title>
+<meta name="description" content="A paced breathing guide with adjustable timing, voice cues and a soft breath sound.">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+<link rel="apple-touch-icon" sizes="180x180" href="icons/icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Vagal Breath">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#e6ece8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0e1a1b" media="(prefers-color-scheme: dark)">
+<link rel="preload" href="fonts/spectral-300-italic-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<!--APP-->
+<div class="app" id="app" data-mode="idle">
+  <header class="top">
+    <span class="mark">Vagal Breath</span>
+    <span class="clock" id="clock" aria-live="off">5 min</span>
+  </header>
+
+  <main class="stage" id="stage">
+    <canvas id="field" aria-hidden="true"></canvas>
+    <div class="cue" aria-live="polite">
+      <p class="cue-word" id="cueWord">Ready when you are</p>
+      <p class="cue-count" id="cueCount">Slow 5.5</p>
+    </div>
+  </main>
+
+  <section class="dock" id="dock">
+    <div class="presets" id="presets" role="radiogroup" aria-label="Breathing pattern">
+      <button type="button" class="chip" role="radio" data-preset="slow" id="p-slow">Slow 5.5</button>
+      <button type="button" class="chip" role="radio" data-preset="478" id="p-478">4-7-8</button>
+      <button type="button" class="chip" role="radio" data-preset="box" id="p-box">Box</button>
+      <button type="button" class="chip" role="radio" data-preset="long" id="p-long">Long exhale</button>
+      <button type="button" class="chip" role="radio" data-preset="custom" id="p-custom" hidden>Custom</button>
+    </div>
+    <p class="readout" id="readout"><span id="pattern">In 5.5 · Out 5.5</span><span class="bpm" id="bpm">5.5 breaths a minute</span></p>
+    <div class="actions">
+      <button type="button" class="btn quiet" id="adjustBtn" aria-controls="sheet">Adjust</button>
+      <button type="button" class="btn main" id="mainBtn">Begin</button>
+    </div>
+  </section>
+
+  <div class="scrim" id="scrim" hidden></div>
+  <section class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle" hidden>
+    <div class="sheet-grip" aria-hidden="true"></div>
+    <div class="sheet-head">
+      <h2 id="sheetTitle">Your rhythm</h2>
+      <button type="button" class="btn quiet small" id="doneBtn">Done</button>
+    </div>
+
+    <div class="sliders">
+      <label class="slider" for="s-inhale">
+        <span class="s-name">Breathe in</span>
+        <output id="o-inhale" for="s-inhale">5.5 s</output>
+        <input type="range" id="s-inhale" data-key="inhale" min="2" max="10" step="0.5" value="5.5">
+      </label>
+      <label class="slider" for="s-hold1">
+        <span class="s-name">Hold</span>
+        <output id="o-hold1" for="s-hold1">0 s</output>
+        <input type="range" id="s-hold1" data-key="hold1" min="0" max="10" step="0.5" value="0">
+      </label>
+      <label class="slider" for="s-exhale">
+        <span class="s-name">Breathe out</span>
+        <output id="o-exhale" for="s-exhale">5.5 s</output>
+        <input type="range" id="s-exhale" data-key="exhale" min="2" max="12" step="0.5" value="5.5">
+      </label>
+      <label class="slider" for="s-hold2">
+        <span class="s-name">Hold after breathing out</span>
+        <output id="o-hold2" for="s-hold2">0 s</output>
+        <input type="range" id="s-hold2" data-key="hold2" min="0" max="10" step="0.5" value="0">
+      </label>
+    </div>
+
+    <fieldset class="seg-group">
+      <legend>Session length</legend>
+      <div class="seg" id="lengthSeg">
+        <button type="button" data-min="3" id="len-3">3 min</button>
+        <button type="button" data-min="5" id="len-5">5</button>
+        <button type="button" data-min="10" id="len-10">10</button>
+        <button type="button" data-min="20" id="len-20">20</button>
+        <button type="button" data-min="0" id="len-0">Open</button>
+      </div>
+    </fieldset>
+
+    <fieldset class="seg-group">
+      <legend>Cues</legend>
+      <div class="seg" id="cueSeg">
+        <button type="button" data-cue="voice" id="cue-voice">Voice</button>
+        <button type="button" data-cue="breath" id="cue-breath">Breath</button>
+        <button type="button" data-cue="both" id="cue-both">Both</button>
+        <button type="button" data-cue="silent" id="cue-silent">Silent</button>
+      </div>
+    </fieldset>
+
+    <label class="field" for="voiceSel" id="voiceField">
+      <span class="s-name">Voice</span>
+      <select id="voiceSel"><option value="">System default</option></select>
+    </label>
+
+    <label class="slider" for="s-volume">
+      <span class="s-name">Volume</span>
+      <output id="o-volume" for="s-volume">70%</output>
+      <input type="range" id="s-volume" min="0" max="1" step="0.05" value="0.7">
+    </label>
+
+    <button type="button" class="btn quiet wide" id="sampleBtn">Hear a sample</button>
+
+    <p class="fine">Changes apply from the next breath. Breathe gently, and stop if you feel lightheaded.</p>
+  </section>
+</div>
+<!--/APP-->
+<script src="app.js"></script>
+</body>
+</html>
