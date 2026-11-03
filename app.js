@@ -83,41 +83,12 @@
 
   // ---------- Audio: breath sound and chime ----------
   const audio = {
-    ctx: null, master: null, gain: null, band: null, soft: null, warm: null, keep: null,
+    ctx: null, master: null, gain: null, band: null, soft: null, warm: null,
 
-    // iOS plays Web Audio through the ringer channel, so the silent switch and the
-    // speech engine can mute it. A silent looping <audio> element moves the page onto
-    // the media channel, where Web Audio plays alongside speech and ignores the switch.
-    keepAlive(on) {
-      try {
-        if (!this.keep) {
-          const rate = 8000, n = rate; // one second of silence as a WAV file
-          const buf = new ArrayBuffer(44 + n);
-          const v = new DataView(buf);
-          const str = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
-          str(0, 'RIFF'); v.setUint32(4, 36 + n, true); str(8, 'WAVE'); str(12, 'fmt ');
-          v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
-          v.setUint32(24, rate, true); v.setUint32(28, rate, true); v.setUint16(32, 1, true);
-          v.setUint16(34, 8, true); str(36, 'data'); v.setUint32(40, n, true);
-          for (let i = 0; i < n; i++) v.setUint8(44 + i, 128);
-          const el = document.createElement('audio');
-          el.src = URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
-          el.loop = true;
-          el.preload = 'auto';
-          el.setAttribute('playsinline', '');
-          el.setAttribute('x-webkit-airplay', 'deny');
-          this.keep = el;
-        }
-        if (on) {
-          const p = this.keep.play();
-          if (p && p.catch) p.catch(() => {});
-        } else {
-          this.keep.pause();
-        }
-      } catch (e) { /* not supported */ }
-    },
-
+    // Never wake the audio while the voice is talking: on iOS that takes the
+    // audio away from speech and chops the words.
     wake() {
+      if (speech.busy()) return;
       if (this.ctx && this.ctx.state !== 'running' && this.ctx.state !== 'closed') {
         this.ctx.resume().catch(() => {});
       }
@@ -130,8 +101,6 @@
       try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) { /* not supported */ }
       if (!this.ctx) {
         const ctx = (this.ctx = new AC());
-        // Speech on iOS can interrupt the audio context; bring it back when that happens.
-        ctx.onstatechange = () => { if (run.mode === 'running') this.wake(); };
         const len = Math.floor(ctx.sampleRate * 6);
         const buf = ctx.createBuffer(1, len, ctx.sampleRate);
         const d = buf.getChannelData(0);
@@ -307,10 +276,38 @@
       u.rate = 0.82;
       u.pitch = 0.92;
       u.volume = settings.volume;
+      const token = (this.token = (this.token || 0) + 1);
+      this.talking = true;
+      const done = () => {
+        if (token !== this.token) return;
+        this.talking = false;
+        const fns = this.waiting;
+        this.waiting = [];
+        fns.forEach((fn) => fn());
+      };
+      u.onend = done;
+      u.onerror = done;
+      // iOS sometimes never fires onend, so don't wait forever.
+      setTimeout(done, 2500);
+      this.waiting = [];
       synth.speak(u);
     },
 
-    stop() { if (this.ok) window.speechSynthesis.cancel(); },
+    talking: false,
+    waiting: [],
+    busy() { return this.ok && this.talking; },
+    // Run fn once the current cue has been spoken.
+    after(fn) {
+      if (this.busy()) this.waiting.push(fn);
+      else fn();
+    },
+
+    stop() {
+      this.token = (this.token || 0) + 1;
+      this.talking = false;
+      this.waiting = [];
+      if (this.ok) window.speechSynthesis.cancel();
+    },
   };
 
   // ---------- Keep the screen awake ----------
@@ -357,14 +354,28 @@
     run.phaseDur = settings[KEYS[i]];
     const p = PHASES[i];
     cueWord.textContent = p.word;
-    if (usesVoice()) speech.say(p.say);
-    if (usesBreath() && (p.key === 'inhale' || p.key === 'exhale')) audio.breath(p.key, run.phaseDur);
-    else audio.hush();
+    const airy = usesBreath() && (p.key === 'inhale' || p.key === 'exhale');
+    if (!airy) audio.hush();
+    if (usesVoice()) {
+      // Voice first, then the breath sound over the rest of the phase. Speech and
+      // Web Audio fight over the iPhone's audio when they start together.
+      speech.say(p.say);
+      if (airy) {
+        const phaseAt = run.phaseStart;
+        speech.after(() => {
+          if (run.mode !== 'running' || run.phaseStart !== phaseAt) return;
+          const left = run.phaseDur - (now() - phaseAt) / 1000;
+          if (left > 0.8) audio.breath(p.key, left);
+        });
+      }
+    } else if (airy) {
+      audio.breath(p.key, run.phaseDur);
+    }
   }
 
   function begin() {
     // Everything that needs a tap to unlock on iOS happens right here, inside the tap.
-    if (settings.cue !== 'silent') { audio.keepAlive(true); audio.ensure(); }
+    if (settings.cue !== 'silent') audio.ensure();
     if (run.mode === 'idle' || run.mode === 'done') {
       run.elapsedBefore = 0;
       run.breaths = 0;
@@ -381,7 +392,6 @@
     run.mode = 'paused';
     speech.stop();
     audio.hush();
-    audio.keepAlive(false);
     wake.off();
     cueWord.textContent = 'Paused';
     cueCount.textContent = `${run.breaths} ${run.breaths === 1 ? 'breath' : 'breaths'} so far`;
@@ -394,7 +404,6 @@
     run.elapsedBefore = sessionMs();
     run.mode = 'done';
     audio.hush();
-    setTimeout(() => { if (run.mode === 'done') audio.keepAlive(false); }, 4500);
     wake.off();
     if (!early) {
       if (usesVoice()) speech.say('That is the end of your session');
@@ -676,12 +685,13 @@
     speech.say('Breathe in');
   });
   $('sampleBtn').addEventListener('click', () => {
-    audio.keepAlive(true);
     audio.ensure();
-    setTimeout(() => { if (run.mode !== 'running') audio.keepAlive(false); }, 5000);
     if (settings.cue === 'silent') { speech.say('Cues are set to silent'); return; }
     if (usesVoice()) speech.say('Breathe in');
-    if (usesBreath()) audio.breath('inhale', 3.5);
+    if (usesBreath()) {
+      if (usesVoice()) speech.after(() => audio.breath('inhale', 3.5));
+      else audio.breath('inhale', 3.5);
+    }
   });
 
   // Pause when the app goes to the background; timers and audio stop there anyway.

@@ -16,6 +16,6 @@ Open the https address in Safari, tap Share, then Add to Home Screen.
 ## Notes
 - Sound and speech start from the Begin tap, as iOS requires.
 - Vibration is not available to web apps in iOS Safari, so it is left out.
-- During a session the app plays a silent looping audio track. This keeps iOS on its media channel, so the breath sound plays alongside the spoken cues and is not muted by silent mode. It may show as playing audio in Control Center.
+- With cues set to Both, the app says the cue first and starts the breath sound once the voice finishes. On iPhone, speech and web audio interrupt each other when they start together, so they take turns. If silent mode is on, the breath sound may be muted while the voice still plays.
 - The screen stays awake during a session where the browser supports it.
 - Settings are saved on the phone only.
