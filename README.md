@@ -16,6 +16,6 @@ Open the https address in Safari, tap Share, then Add to Home Screen.
 ## Notes
 - Sound and speech start from the Begin tap, as iOS requires.
 - Vibration is not available to web apps in iOS Safari, so it is left out.
-- On iOS 17 and later the app asks for playback audio, which plays even with the ringer switch on silent. On older versions, the breath sound follows the ringer switch.
+- During a session the app plays a silent looping audio track. This keeps iOS on its media channel, so the breath sound plays alongside the spoken cues and is not muted by the ringer switch. It may show as playing audio in Control Center.
 - The screen stays awake during a session where the browser supports it.
 - Settings are saved on the phone only.

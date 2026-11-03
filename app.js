@@ -19,7 +19,7 @@
   const STORE_KEY = 'vagal-breath:v1';
   const DEFAULTS = {
     preset: 'slow', inhale: 5.5, hold1: 0, exhale: 5.5, hold2: 0,
-    minutes: 5, cue: 'both', voiceURI: '', volume: 0.7,
+    minutes: 5, cue: 'both', voiceURI: '', volume: 0.7, breath: 0.6,
   };
 
   const settings = Object.assign({}, DEFAULTS, loadSettings());
@@ -36,6 +36,7 @@
       if (['voice', 'breath', 'both', 'silent'].includes(s.cue)) out.cue = s.cue;
       if (typeof s.voiceURI === 'string') out.voiceURI = s.voiceURI;
       if (typeof s.volume === 'number' && s.volume >= 0 && s.volume <= 1) out.volume = s.volume;
+      if (typeof s.breath === 'number' && s.breath >= 0.1 && s.breath <= 1) out.breath = s.breath;
       return out;
     } catch (e) { return {}; }
   }
@@ -82,9 +83,45 @@
 
   // ---------- Audio: breath sound and chime ----------
   const audio = {
-    ctx: null, master: null, gain: null, band: null, soft: null, warm: null,
-    // The breath sits well under the voice: its peak is about a third of full level.
-    LEVEL: 0.34,
+    ctx: null, master: null, gain: null, band: null, soft: null, warm: null, keep: null,
+
+    // iOS plays Web Audio through the ringer channel, so the silent switch and the
+    // speech engine can mute it. A silent looping <audio> element moves the page onto
+    // the media channel, where Web Audio plays alongside speech and ignores the switch.
+    keepAlive(on) {
+      try {
+        if (!this.keep) {
+          const rate = 8000, n = rate; // one second of silence as a WAV file
+          const buf = new ArrayBuffer(44 + n);
+          const v = new DataView(buf);
+          const str = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
+          str(0, 'RIFF'); v.setUint32(4, 36 + n, true); str(8, 'WAVE'); str(12, 'fmt ');
+          v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+          v.setUint32(24, rate, true); v.setUint32(28, rate, true); v.setUint16(32, 1, true);
+          v.setUint16(34, 8, true); str(36, 'data'); v.setUint32(40, n, true);
+          for (let i = 0; i < n; i++) v.setUint8(44 + i, 128);
+          const el = document.createElement('audio');
+          el.src = URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+          el.loop = true;
+          el.preload = 'auto';
+          el.setAttribute('playsinline', '');
+          el.setAttribute('x-webkit-airplay', 'deny');
+          this.keep = el;
+        }
+        if (on) {
+          const p = this.keep.play();
+          if (p && p.catch) p.catch(() => {});
+        } else {
+          this.keep.pause();
+        }
+      } catch (e) { /* not supported */ }
+    },
+
+    wake() {
+      if (this.ctx && this.ctx.state !== 'running' && this.ctx.state !== 'closed') {
+        this.ctx.resume().catch(() => {});
+      }
+    },
 
     ensure() {
       const AC = window.AudioContext || window.webkitAudioContext;
@@ -93,6 +130,8 @@
       try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) { /* not supported */ }
       if (!this.ctx) {
         const ctx = (this.ctx = new AC());
+        // Speech on iOS can interrupt the audio context; bring it back when that happens.
+        ctx.onstatechange = () => { if (run.mode === 'running') this.wake(); };
         const len = Math.floor(ctx.sampleRate * 6);
         const buf = ctx.createBuffer(1, len, ctx.sampleRate);
         const d = buf.getChannelData(0);
@@ -119,19 +158,20 @@
         src.buffer = buf;
         src.loop = true;
         src.loopEnd = (len - fade) / ctx.sampleRate;
-        // A broad, low band plus two gentle low-pass stages keeps it warm and takes out the hiss.
+        // A broad band in the range a phone speaker plays well, with two gentle
+        // low-pass stages to take the hiss off the top.
         this.band = ctx.createBiquadFilter();
         this.band.type = 'bandpass';
-        this.band.Q.value = 0.45;
-        this.band.frequency.value = 450;
+        this.band.Q.value = 0.6;
+        this.band.frequency.value = 700;
         this.soft = ctx.createBiquadFilter();
         this.soft.type = 'lowpass';
         this.soft.Q.value = 0.5;
-        this.soft.frequency.value = 1100;
+        this.soft.frequency.value = 2000;
         this.warm = ctx.createBiquadFilter();
         this.warm.type = 'lowpass';
         this.warm.Q.value = 0.5;
-        this.warm.frequency.value = 1500;
+        this.warm.frequency.value = 2600;
         this.gain = ctx.createGain();
         this.gain.gain.value = 0;
         this.master = ctx.createGain();
@@ -139,7 +179,7 @@
         src.connect(this.band).connect(this.soft).connect(this.warm).connect(this.gain).connect(this.master).connect(ctx.destination);
         src.start();
       }
-      if (this.ctx.state !== 'running') this.ctx.resume().catch(() => {});
+      this.wake();
       return true;
     },
 
@@ -148,39 +188,46 @@
     },
 
     // Swell of air shaped to the length of the phase.
+    // Built from short ramps rather than one value curve: Safari throws if a new
+    // curve overlaps one still playing, which silenced every breath after the first.
     breath(kind, seconds) {
       if (!this.ctx || seconds <= 0) return;
+      this.wake();
       const now = this.ctx.currentTime;
       const g = this.gain.gain;
       const f = this.band.frequency;
-      const n = 96;
-      const curve = new Float32Array(n);
+      const peak = settings.breath;
       const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
       // Slow, rounded swells: no sudden start, and a long fade at the end.
-      for (let i = 0; i < n; i++) {
-        const x = i / (n - 1);
-        const shape = kind === 'inhale'
-          ? smooth(0, 0.4, x) * (1 - smooth(0.62, 1, x))
-          : smooth(0, 0.22, x) * (0.5 + 0.5 * Math.cos(Math.PI * Math.max(0, (x - 0.22) / 0.78)));
-        curve[i] = this.LEVEL * shape;
-      }
-      curve[n - 1] = 0;
+      const shape = (x) => (kind === 'inhale'
+        ? smooth(0, 0.4, x) * (1 - smooth(0.62, 1, x))
+        : smooth(0, 0.22, x) * (0.5 + 0.5 * Math.cos(Math.PI * Math.max(0, (x - 0.22) / 0.78))));
+      const span = Math.max(0.3, seconds - 0.05);
       try {
-        g.cancelScheduledValues(now);
-        f.cancelScheduledValues(now);
-        g.setValueAtTime(0, now);
-        g.setValueCurveAtTime(curve, now + 0.02, Math.max(0.2, seconds - 0.08));
-        const [f0, f1] = kind === 'inhale' ? [300, 720] : [620, 240];
+        this.cancel(g, now);
+        this.cancel(f, now);
+        g.setValueAtTime(Math.min(g.value, 0.05), now);
+        const steps = 32;
+        for (let i = 1; i <= steps; i++) {
+          const x = i / steps;
+          g.linearRampToValueAtTime(i === steps ? 0 : peak * shape(x), now + span * x);
+        }
+        const [f0, f1] = kind === 'inhale' ? [450, 1000] : [900, 380];
         f.setValueAtTime(f0, now);
-        f.exponentialRampToValueAtTime(f1, now + seconds);
+        f.exponentialRampToValueAtTime(f1, now + span);
       } catch (e) { /* scheduling can fail if the context is closing */ }
+    },
+
+    cancel(param, t) {
+      if (param.cancelAndHoldAtTime) param.cancelAndHoldAtTime(t);
+      else param.cancelScheduledValues(t);
     },
 
     hush() {
       if (!this.ctx) return;
       const now = this.ctx.currentTime;
       try {
-        this.gain.gain.cancelScheduledValues(now);
+        this.cancel(this.gain.gain, now);
         this.gain.gain.setTargetAtTime(0, now, 0.08);
       } catch (e) { /* ignore */ }
     },
@@ -317,7 +364,7 @@
 
   function begin() {
     // Everything that needs a tap to unlock on iOS happens right here, inside the tap.
-    if (settings.cue !== 'silent') audio.ensure();
+    if (settings.cue !== 'silent') { audio.keepAlive(true); audio.ensure(); }
     if (run.mode === 'idle' || run.mode === 'done') {
       run.elapsedBefore = 0;
       run.breaths = 0;
@@ -334,6 +381,7 @@
     run.mode = 'paused';
     speech.stop();
     audio.hush();
+    audio.keepAlive(false);
     wake.off();
     cueWord.textContent = 'Paused';
     cueCount.textContent = `${run.breaths} ${run.breaths === 1 ? 'breath' : 'breaths'} so far`;
@@ -346,6 +394,7 @@
     run.elapsedBefore = sessionMs();
     run.mode = 'done';
     audio.hush();
+    setTimeout(() => { if (run.mode === 'done') audio.keepAlive(false); }, 4500);
     wake.off();
     if (!early) {
       if (usesVoice()) speech.say('That is the end of your session');
@@ -536,6 +585,11 @@
     vol.value = settings.volume;
     $('o-volume').textContent = `${Math.round(settings.volume * 100)}%`;
     paintFill(vol);
+    const br = $('s-breath');
+    br.value = settings.breath;
+    $('o-breath').textContent = `${Math.round(settings.breath * 100)}%`;
+    paintFill(br);
+    $('breathField').hidden = !usesBreath();
     document.querySelectorAll('#lengthSeg button').forEach((b) => b.setAttribute('aria-pressed', String(Number(b.dataset.min) === settings.minutes)));
     document.querySelectorAll('#cueSeg button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.cue === settings.cue)));
     voiceField.hidden = !speech.ok || !usesVoice();
@@ -594,6 +648,11 @@
     saveSettings();
     renderSettings();
   });
+  $('s-breath').addEventListener('input', (e) => {
+    settings.breath = Number(e.target.value);
+    saveSettings();
+    renderSettings();
+  });
   $('lengthSeg').addEventListener('click', (e) => {
     const b = e.target.closest('button');
     if (!b) return;
@@ -617,7 +676,9 @@
     speech.say('Breathe in');
   });
   $('sampleBtn').addEventListener('click', () => {
+    audio.keepAlive(true);
     audio.ensure();
+    setTimeout(() => { if (run.mode !== 'running') audio.keepAlive(false); }, 5000);
     if (settings.cue === 'silent') { speech.say('Cues are set to silent'); return; }
     if (usesVoice()) speech.say('Breathe in');
     if (usesBreath()) audio.breath('inhale', 3.5);
@@ -654,7 +715,15 @@
   // Offline support when served over https.
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
     window.addEventListener('load', () => {
+      const hadController = !!navigator.serviceWorker.controller;
       navigator.serviceWorker.register('sw.js').catch(() => { /* preview frames do not allow it */ });
+      // When an update takes over, reload once so the new version shows right away.
+      let reloaded = false;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (!hadController || reloaded || run.mode === 'running') return;
+        reloaded = true;
+        location.reload();
+      });
     });
   }
 

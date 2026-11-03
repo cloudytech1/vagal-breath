@@ -1,5 +1,5 @@
 /* Offline cache for Vagal Breath. Bump VERSION whenever a file changes. */
-const VERSION = 'vagal-breath-v2';
+const VERSION = 'vagal-breath-v3';
 const FILES = [
   './',
   './index.html',
@@ -17,7 +17,7 @@ const FILES = [
 ];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(VERSION).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
+  event.waitUntil(caches.open(VERSION).then((c) => c.addAll(FILES.map((f) => new Request(f, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (event) => {
