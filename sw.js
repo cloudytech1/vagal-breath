@@ -1,5 +1,5 @@
 /* Offline cache for Vagal Breath. Bump VERSION whenever a file changes. */
-const VERSION = 'vagal-breath-v5';
+const VERSION = 'vagal-breath-v6';
 const FILES = [
   './',
   './index.html',

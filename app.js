@@ -17,7 +17,7 @@
   ];
   const KEYS = ['inhale', 'hold1', 'exhale', 'hold2'];
   const STORE_KEY = 'vagal-breath:v1';
-  const APP_VERSION = 5; // keep in step with VERSION in sw.js
+  const APP_VERSION = 6; // keep in step with VERSION in sw.js
   const DEFAULTS = {
     preset: 'slow', inhale: 5.5, hold1: 0, exhale: 5.5, hold2: 0,
     minutes: 5, cue: 'both', voiceURI: '', volume: 0.7, breath: 0.6,
@@ -86,14 +86,26 @@
   const audio = {
     ctx: null, master: null, gain: null, band: null, soft: null, warm: null,
 
+    // Fade the breath to silence, then pause the audio engine. Pausing at once
+    // would cut any sound mid-wave and click.
     quiet() {
-      if (this.ctx && this.ctx.state === 'running') this.ctx.suspend().catch(() => {});
+      if (!this.ctx || this.ctx.state !== 'running') return;
+      const now = this.ctx.currentTime;
+      try {
+        this.cancel(this.gain.gain, now);
+        this.gain.gain.setTargetAtTime(0, now, 0.015);
+      } catch (e) { /* ignore */ }
+      clearTimeout(this.quietTimer);
+      this.quietTimer = setTimeout(() => {
+        if (speech.busy() && this.ctx.state === 'running') this.ctx.suspend().catch(() => {});
+      }, 90);
     },
 
     // Never wake the audio while the voice is talking: on iOS that takes the
     // audio away from speech and chops the words.
     wake() {
       if (speech.busy()) return;
+      clearTimeout(this.quietTimer);
       if (this.ctx && this.ctx.state !== 'running' && this.ctx.state !== 'closed') {
         this.ctx.resume().catch(() => {});
       }
@@ -180,7 +192,8 @@
       try {
         this.cancel(g, now);
         this.cancel(f, now);
-        g.setValueAtTime(Math.min(g.value, 0.05), now);
+        // Always start from silence so the handoff from the voice is seamless.
+        g.setValueAtTime(0, now);
         const steps = 32;
         for (let i = 1; i <= steps; i++) {
           const x = i / steps;
