@@ -17,6 +17,7 @@
   ];
   const KEYS = ['inhale', 'hold1', 'exhale', 'hold2'];
   const STORE_KEY = 'vagal-breath:v1';
+  const APP_VERSION = 5; // keep in step with VERSION in sw.js
   const DEFAULTS = {
     preset: 'slow', inhale: 5.5, hold1: 0, exhale: 5.5, hold2: 0,
     minutes: 5, cue: 'both', voiceURI: '', volume: 0.7, breath: 0.6,
@@ -84,6 +85,10 @@
   // ---------- Audio: breath sound and chime ----------
   const audio = {
     ctx: null, master: null, gain: null, band: null, soft: null, warm: null,
+
+    quiet() {
+      if (this.ctx && this.ctx.state === 'running') this.ctx.suspend().catch(() => {});
+    },
 
     // Never wake the audio while the voice is talking: on iOS that takes the
     // audio away from speech and chops the words.
@@ -269,7 +274,10 @@
     say(text) {
       if (!this.ok) return;
       const synth = window.speechSynthesis;
-      if (synth.speaking || synth.pending) synth.cancel();
+      // Only cut off our own cue if it is still talking. iOS often reports
+      // speaking for a moment after a cue ends, and cancel() right before
+      // speak() clips the next cue.
+      if (this.talking) synth.cancel();
       const u = new SpeechSynthesisUtterance(text);
       const v = this.pick();
       if (v) { u.voice = v; u.lang = v.lang; }
@@ -290,6 +298,9 @@
       // iOS sometimes never fires onend, so don't wait forever.
       setTimeout(done, 2500);
       this.waiting = [];
+      // Pause web audio completely while the voice talks. On iPhone a running
+      // audio context, even a silent one, breaks up speech.
+      audio.quiet();
       synth.speak(u);
     },
 
@@ -406,9 +417,13 @@
     audio.hush();
     wake.off();
     if (!early) {
-      if (usesVoice()) speech.say('That is the end of your session');
-      else speech.stop();
-      if (settings.cue !== 'silent') audio.chime();
+      if (usesVoice()) {
+        speech.say('That is the end of your session');
+        speech.after(() => { audio.wake(); audio.chime(); });
+      } else {
+        speech.stop();
+        if (settings.cue !== 'silent') audio.chime();
+      }
     } else {
       speech.stop();
     }
@@ -736,6 +751,9 @@
       });
     });
   }
+
+  const tag = $('buildTag');
+  if (tag) tag.textContent = `Version ${APP_VERSION}`;
 
   // Exposed for testing only.
   window.__breath = { settings, run, PRESETS, cycleSeconds, matchPreset, bpmText, patternText };
