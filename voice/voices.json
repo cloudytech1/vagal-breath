@@ -1,0 +1,8 @@
+{
+  "ext": "mp3",
+  "voices": [
+    { "id": "af_heart", "name": "Heart (warm)" },
+    { "id": "af_nicole", "name": "Nicole (soft, close)" },
+    { "id": "bm_george", "name": "George (deep)" }
+  ]
+}
